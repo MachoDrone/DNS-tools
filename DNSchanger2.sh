@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# Check if DNS arguments are provided
-if [ -z "$1" ] || [ -z "$2" ]; then
-    echo "Usage: $0 <DNS1> <DNS2>"
+# Check if at least one DNS argument is provided
+if [ -z "$1" ]; then
+    echo "Usage: $0 <DNS1> [DNS2]"
     echo "Example: $0 8.8.8.8 8.8.4.4"
     exit 1
 fi
@@ -10,33 +10,30 @@ fi
 DNS1=$1
 DNS2=$2
 
-# Show DNS entries before the script
+# Show DNS entries before the script (via systemd-resolved)
 echo "DNS server entries before the script:"
-cat /etc/resolv.conf | grep "nameserver" || echo "No nameserver entries found."
+resolvectl status | grep "DNS Servers" || echo "No DNS servers found."
 
-# Backup resolv.conf
-cp /etc/resolv.conf /etc/resolv.conf.bak
+# Set new DNS servers using resolvectl
+echo "Setting DNS servers to $DNS1${DNS2:+ and $DNS2}..."
+resolvectl set-dns global "$DNS1"
+[ -n "$DNS2" ] && resolvectl set-dns global "$DNS1 $DNS2"
 
-# Update DNS entries
-echo "nameserver $DNS1" > /etc/resolv.conf
-echo "nameserver $DNS2" >> /etc/resolv.conf
-
-# Apply changes immediately (Ubuntu 24.04 uses systemd-resolved)
+# Restart systemd-resolved to apply changes
 if systemctl is-active systemd-resolved >/dev/null 2>&1; then
     echo "Restarting systemd-resolved to apply DNS changes..."
     systemctl restart systemd-resolved
+    sleep 2
 else
-    echo "systemd-resolved not active. Changes may not apply until reboot or manual service restart."
+    echo "systemd-resolved not active. Changes may not apply until reboot."
+    exit 1
 fi
-
-# Wait briefly for service to restart
-sleep 2
 
 # Show DNS entries after the script
 echo "DNS server entries after the script:"
-cat /etc/resolv.conf | grep "nameserver" || echo "No nameserver entries found."
+resolvectl status | grep "DNS Servers" || echo "No DNS servers found."
 
-# Basic test to verify DNS is working
+# Test DNS resolution
 echo "Testing DNS resolution with 'google.com'..."
 if ping -c 4 google.com >/dev/null 2>&1; then
     echo "DNS test successful: google.com resolved and pinged."
