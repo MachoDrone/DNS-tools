@@ -38,7 +38,6 @@ if systemctl is-active NetworkManager >/dev/null 2>&1; then
     echo "Restarting NetworkManager to apply DNS changes..."
     systemctl restart NetworkManager
 elif systemctl is-active systemd-resolved >/dev/null 2>&1; then
-    # Fallback: Edit /run/systemd/resolve/resolv.conf directly
     echo "Setting DNS servers to $DNS1${DNS2:+ and $DNS2} via systemd-resolved (manual fallback)..."
     cp /run/systemd/resolve/resolv.conf /run/systemd/resolve/resolv.conf.bak
     echo "nameserver $DNS1" > /run/systemd/resolve/resolv.conf
