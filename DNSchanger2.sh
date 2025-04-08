@@ -38,7 +38,6 @@ if systemctl is-active NetworkManager >/dev/null 2>&1; then
     echo "Restarting NetworkManager to apply DNS changes..."
     systemctl restart NetworkManager
 elif systemctl is-active systemd-resolved >/dev/null 2>&1; then
-    # Fallback: Edit /run/systemd/resolve/resolv.conf directly if resolvectl fails
     echo "Setting DNS servers to $DNS1${DNS2:+ and $DNS2} via systemd-resolved (manual fallback)..."
     cp /run/systemd/resolve/resolv.conf /run/systemd/resolve/resolv.conf.bak
     echo "nameserver $DNS1" > /run/systemd/resolve/resolv.conf
@@ -72,3 +71,16 @@ if ping -c 4 google.com >/dev/null 2>&1; then
 else
     echo "DNS test failed: Could not resolve or ping google.com."
 fi
+
+# Show network interface statuses, including Docker and Podman
+echo -e "\nNetwork interface statuses:"
+ip link show | awk '/^[0-9]+:/ {
+    iface=$2; sub(/:$/, "", iface);
+    state=($3 ~ /UP/ ? "UP" : "DOWN");
+    if (iface ~ /^docker[0-9]+/) { desc=" (Docker bridge)" }
+    else if (iface ~ /^veth.*@if[0-9]+/) { desc=" (Docker/Podman container interface)" }
+    else if (iface ~ /^podman[0-9]*$/) { desc=" (Podman network)" }
+    else if (iface ~ /^podman_nested/) { desc=" (Podman in Docker network)" }
+    else { desc="" }
+    print "  " iface ": " state desc
+}'
