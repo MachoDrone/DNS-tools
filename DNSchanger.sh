@@ -1,86 +1,66 @@
 #!/bin/bash
 
-# Check if at least one DNS argument is provided
-if [ -z "$1" ]; then
-    echo "Usage: $0 <DNS1> [DNS2]"
-    echo "Example: $0 8.8.8.8 8.8.4.4"
-    exit 1
-fi
+# DNSchanger.sh: Set DNS servers, extract wallet address, and display system info
+# Usage: ./DNSchanger.sh [DNS1] [DNS2]
+# Defaults to Cloudflare DNS (1.1.1.1, 1.0.0.1) if no arguments provided
 
-DNS1=$1
-DNS2=$2
+# Set DNS servers from arguments or default to 1.1.1.1 1.0.0.1
+DNS1=${1:-1.1.1.1}
+DNS2=${2:-1.0.0.1}
+DNS_SERVERS="$DNS1 $DNS2"
 
-# Function to get the active connection name (for NetworkManager)
-get_nm_connection() {
-    nmcli -t -f NAME con show --active | head -n 1
-}
+# Determine Ubuntu type and version
+UBUNTU_TYPE=$(if grep -qi microsoft /proc/version; then echo WSL2; else if dpkg -l | grep -q ubuntu-desktop; then echo Desktop; elif dpkg -l | grep -q ubuntu-server; then echo Server; else echo Minimal; fi; fi)
+UBUNTU_VERSION=$(lsb_release -rs)
 
-# Show DNS entries before the script
-echo "DNS server entries before the script:"
-if systemctl is-active NetworkManager >/dev/null 2>&1; then
-    nmcli dev show | grep "DNS" || echo "No DNS servers found."
-elif systemctl is-active systemd-resolved >/dev/null 2>&1; then
-    resolvectl status | grep "DNS Servers" || echo "No DNS servers found."
+# Extract wallet address from nosana-node logs
+WALLET=$(docker logs -t nosana-node 2>/dev/null | grep -E '[A-Za-z0-9]{26,44}' | head -n 1 | awk '{print $NF}')
+
+# Show current DNS and query status
+echo "Current DNS Servers:"
+resolvectl status | grep "DNS Servers"
+dig example.com | grep SERVER
+
+# Configure DNS
+sudo bash -c "
+  if [ -d /etc/netplan ]; then
+    for f in /etc/netplan/*.yaml; do
+      cp \"\$f\" \"\$f.bak\"
+      sed -i '/nameservers:/,+1d' \"\$f\"
+    done
+    netplan apply
+  fi
+  mkdir -p /etc/systemd/resolved.conf.d
+  rm -f /etc/systemd/resolved.conf.d/*.conf
+  echo -e '[Resolve]\nDNS=$DNS_SERVERS\nDomains=~.\nCache=yes\nLLMNR=no\nMulticastDNS=no' > /etc/systemd/resolved.conf.d/custom_dns.conf
+  echo -e '[Resolve]\nDNSStubListener=yes' > /etc/systemd/resolved.conf
+  if command -v nmcli > /dev/null; then
+    for conn in \$(nmcli -t -f NAME c show --active); do
+      nmcli con mod \"\$conn\" ipv4.ignore-auto-dns yes ipv4.dns '' 2>/dev/null
+    done
+  fi
+  systemctl restart systemd-resolved
+  ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+  if [ -f /etc/wsl.conf ] && ! grep -q 'systemd=true' /etc/wsl.conf; then
+    echo '[boot]\nsystemd=true' >> /etc/wsl.conf
+  fi
+"
+
+# Show updated DNS and query status
+echo "Updated DNS Servers:"
+resolvectl status | grep "DNS Servers"
+dig example.com | grep SERVER
+
+# Display wallet address
+if [ -n "$WALLET" ]; then
+  echo "Host Address: $WALLET"
 else
-    cat /etc/resolv.conf | grep "nameserver" || echo "No nameserver entries found."
+  echo "No wallet address found"
 fi
 
-# Set DNS servers
-if systemctl is-active NetworkManager >/dev/null 2>&1; then
-    CONN=$(get_nm_connection)
-    if [ -z "$CONN" ]; then
-        echo "Error: No active NetworkManager connection found."
-        exit 1
-    fi
-    echo "Setting DNS servers to $DNS1${DNS2:+ and $DNS2} via NetworkManager..."
-    nmcli con mod "$CONN" ipv4.dns "$DNS1${DNS2:+ $DNS2}"
-    nmcli con up "$CONN" >/dev/null 2>&1
-    echo "Restarting NetworkManager to apply DNS changes..."
-    systemctl restart NetworkManager
-elif systemctl is-active systemd-resolved >/dev/null 2>&1; then
-    echo "Setting DNS servers to $DNS1${DNS2:+ and $DNS2} via systemd-resolved (manual fallback)..."
-    cp /run/systemd/resolve/resolv.conf /run/systemd/resolve/resolv.conf.bak
-    echo "nameserver $DNS1" > /run/systemd/resolve/resolv.conf
-    [ -n "$DNS2" ] && echo "nameserver $DNS2" >> /run/systemd/resolve/resolv.conf
-    echo "Restarting systemd-resolved to apply DNS changes..."
-    systemctl restart systemd-resolved
-else
-    echo "No supported DNS service found. Editing /etc/resolv.conf (may not persist)..."
-    cp /etc/resolv.conf /etc/resolv.conf.bak
-    echo "nameserver $DNS1" > /etc/resolv.conf
-    [ -n "$DNS2" ] && echo "nameserver $DNS2" >> /etc/resolv.conf
-fi
+# Explain default DNS choice and provide sample command
+echo "Default DNS servers (1.1.1.1, 1.0.0.1) chosen for their reliability, privacy, and speed (Cloudflare DNS)."
+echo "Sample command with custom DNS: $0 8.8.8.8 8.8.4.4"
 
-# Wait for services to stabilize
-sleep 2
-
-# Show DNS entries after the script
-echo "DNS server entries after the script:"
-if systemctl is-active NetworkManager >/dev/null 2>&1; then
-    nmcli dev show | grep "DNS" || echo "No DNS servers found."
-elif systemctl is-active systemd-resolved >/dev/null 2>&1; then
-    resolvectl status | grep "DNS Servers" || echo "No DNS servers found."
-else
-    cat /etc/resolv.conf | grep "nameserver" || echo "No nameserver entries found."
-fi
-
-# Test DNS resolution
-echo "Testing DNS resolution with 'google.com'..."
-if ping -c 4 google.com >/dev/null 2>&1; then
-    echo "DNS test successful: google.com resolved and pinged."
-else
-    echo "DNS test failed: Could not resolve or ping google.com."
-fi
-
-# Show network interface statuses, including Docker and Podman
-echo -e "\nNetwork interface statuses:"
-ip link show | awk '/^[0-9]+:/ {
-    iface=$2; sub(/:$/, "", iface);
-    state=($3 ~ /UP/ ? "UP" : "DOWN");
-    if (iface ~ /^docker[0-9]+/) { desc=" (Docker bridge)" }
-    else if (iface ~ /^veth.*@if[0-9]+/) { desc=" (Docker/Podman container interface)" }
-    else if (iface ~ /^podman[0-9]*$/) { desc=" (Podman network)" }
-    else if (iface ~ /^podman_nested/) { desc=" (Podman in Docker network)" }
-    else { desc="" }
-    print "  " iface ": " state desc
-}'
+# Display Ubuntu version statement
+echo "Running on $UBUNTU_TYPE Ubuntu $UBUNTU_VERSION"
